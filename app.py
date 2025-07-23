@@ -135,9 +135,10 @@ def main():
     st.subheader("Summary")
     st.markdown(f"""
     This report evaluates 23 machine learning models for object detection in citrus groves across {len(filtered_df)} images from years {', '.join(years)}. 
-    Metrics include true positives (TP), false positives (FP), false negatives (FN), precision, and recall. 
-    The **winning model** is {winner['model']} with an F1 score of {winner['f1']*100:.2f}%.
-    
+    Metrics include true positives (TP), false positives (FP), false negatives (FN), precision, and recall.
+    """)
+    st.markdown(f"The **winning model** is {winner['model']} with an F1 score of {winner['f1']*100:.2f}%.")
+    st.markdown(f"""
     **Key Observations:**
     - **Highest Precision**: {max(model_metrics, key=lambda x: x['avg_precision'], default={'model': 'None', 'avg_precision': 0})['model']} ({max(model_metrics, key=lambda x: x['avg_precision'], default={'model': 'None', 'avg_precision': 0})['avg_precision']*100:.2f}%)
     - **Highest Recall**: {max(model_metrics, key=lambda x: x['avg_recall'], default={'model': 'None', 'avg_recall': 0})['model']} ({max(model_metrics, key=lambda x: x['avg_recall'], default={'model': 'None', 'avg_recall': 0})['avg_recall']*100:.2f}%)
