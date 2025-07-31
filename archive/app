@@ -1,0 +1,480 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
+import os
+import glob
+import re
+from io import BytesIO
+import base64
+from data_manger.load_data import load_data
+
+# Set page configuration
+st.set_page_config(page_title="Advanced Model Evaluation Report", layout="wide")
+
+
+# Function to calculate model metrics
+def calculate_model_metrics(df, model_nums):
+    model_metrics = []
+    for mn in model_nums:
+        prec_col = f'precision_{mn}'
+        rec_col = f'recall_{mn}'
+        tp_col = f'tp_{mn}'
+        fp_col = f'fp_{mn}'
+        fn_col = f'fn_{mn}'
+        
+        valid_data = df[df[prec_col] > 0]
+        avg_precision = valid_data[prec_col].mean() if not valid_data.empty else 0
+        avg_recall = valid_data[rec_col].mean() if not valid_data.empty else 0
+        total_tp = df[tp_col].sum()
+        total_fp = df[fp_col].sum()
+        total_fn = df[fn_col].sum()
+        f1 = (2 * avg_precision * avg_recall) / (avg_precision + avg_recall) if (avg_precision + avg_recall) > 0 else 0
+        
+        model_metrics.append({
+            'model': f'Model {mn}',
+            'avg_precision': avg_precision,
+            'avg_recall': avg_recall,
+            'f1': f1,
+            'total_tp': total_tp,
+            'total_fp': total_fp,
+            'total_fn': total_fn,
+            'data': df[['filename', 'year', 'domaine', 'porte_greffe', 'parcelle', prec_col, rec_col, tp_col, fp_col, fn_col]].copy()
+        })
+    return model_metrics
+
+# Function to download Plotly figure as PNG
+def get_plotly_download_button(fig, filename):
+    buffer = BytesIO()
+    fig.write_image(buffer, format="png")
+    buffer.seek(0)
+    b64 = base64.b64encode(buffer.read()).decode()
+    href = f'<a href="data:image/png;base64,{b64}" download="{filename}.png">Download chart as PNG</a>'
+    return href
+
+# Main app
+def main():
+    st.title("Advanced Model Evaluation Report")
+    st.markdown("Evaluate machine learning models for object detection in citrus groves. Use filters to explore performance metrics and visualizations.")
+
+    # Data folder path
+    data_folder = r"D:\Projects\croplens_data\data"
+    if not os.path.exists(data_folder):
+        st.error(f"Data folder not found: {data_folder}")
+        return
+
+    # Load data
+    with st.spinner("Loading data..."):
+        df, model_nums = load_data(data_folder)
+    if df is None:
+        return
+
+    # Check for required columns
+    required_cols = ['year', 'domaine', 'porte_greffe', 'parcelle', 'filename']
+    for mn in model_nums:
+        required_cols.extend([f'precision_{mn}', f'recall_{mn}', f'tp_{mn}', f'fp_{mn}', f'fn_{mn}'])
+    
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        st.error(f"Missing required columns: {', '.join(missing_cols)}")
+        return
+
+    # Filters
+    with st.expander("Filters", expanded=True):
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            models = [f'Model {i}' for i in model_nums]
+            selected_model = st.selectbox("Select Model", ['All Models'] + models, key='model', help="Choose a specific model or view all models.")
+        with col2:
+            years = sorted(df['year'].unique().astype(str))
+            selected_year = st.selectbox("Select Year", ['All Years'] + years, key='year', help="Filter by year of data collection.")
+        with col3:
+            domaines = sorted(df['domaine'].unique())
+            selected_domaine = st.selectbox("Select Domaine", ['All Domaines'] + domaines, key='domaine', help="Filter by domaine (e.g., vineyard or region).")
+        with col4:
+            porte_greffes = sorted(df['porte_greffe'].unique())
+            selected_porte_greffe = st.selectbox("Select Porte Greffe", ['All Porte Greffes'] + porte_greffes, key='porte_greffe', help="Filter by rootstock type.")
+        with col5:
+            parcelles = sorted(df['parcelle'].unique().astype(str))
+            selected_parcelle = st.selectbox("Select Parcelle", ['All Parcelles'] + parcelles, key='parcelle', help="Filter by specific plot or parcel.")
+
+    # Filter data
+    filtered_df = df.copy()
+    if selected_year != 'All Years':
+        filtered_df = filtered_df[filtered_df['year'].astype(str) == selected_year]
+    if selected_domaine != 'All Domaines':
+        filtered_df = filtered_df[filtered_df['domaine'] == selected_domaine]
+    if selected_porte_greffe != 'All Porte Greffes':
+        filtered_df = filtered_df[filtered_df['porte_greffe'] == selected_porte_greffe]
+    if selected_parcelle != 'All Parcelles':
+        filtered_df = filtered_df[filtered_df['parcelle'].astype(str) == selected_parcelle]
+
+    # Calculate model metrics
+    model_metrics = calculate_model_metrics(filtered_df, model_nums)
+    metrics_df = pd.DataFrame(model_metrics)
+
+    # Dashboard Overview
+    with st.expander("Dashboard Overview", expanded=True):
+        winner = max(model_metrics, key=lambda x: x['f1'], default={'model': 'None', 'f1': 0})
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Models", len(model_nums))
+        with col2:
+            st.metric("Total Images", len(filtered_df))
+        with col3:
+            st.metric("Winning Model", winner['model'])
+        with col4:
+            st.metric("Top F1 Score", f"{winner['f1']*100:.2f}%")
+        st.markdown("**Quick Insights**: This dashboard summarizes key metrics across all models. Expand sections below for detailed analysis.")
+
+    # Summary
+    with st.expander("Summary", expanded=True):
+        st.markdown(f"""
+        This report evaluates {len(model_nums)} machine learning models for object detection in citrus groves across {len(filtered_df)} images from years {', '.join(years)}. 
+        Metrics include:
+        - **True Positives (TP)**: Correctly detected objects.
+        - **False Positives (FP)**: Incorrectly detected objects.
+        - **False Negatives (FN)**: Missed objects.
+        - **Precision**: Proportion of detections that were correct (TP / (TP + FP)).
+        - **Recall**: Proportion of actual objects detected (TP / (TP + FN)).
+        - **F1 Score**: Harmonic mean of precision and recall.
+        """)
+        st.markdown(f"The **winning model** is {winner['model']} with an F1 score of {winner['f1']*100:.2f}%.")
+        st.markdown(f"""
+        **Key Observations**:
+        - **Highest Precision**: {max(model_metrics, key=lambda x: x['avg_precision'], default={'model': 'None', 'avg_precision': 0})['model']} ({max(model_metrics, key=lambda x: x['avg_precision'], default={'model': 'None', 'avg_precision': 0})['avg_precision']*100:.2f}%)
+        - **Highest Recall**: {max(model_metrics, key=lambda x: x['avg_recall'], default={'model': 'None', 'avg_recall': 0})['model']} ({max(model_metrics, key=lambda x: x['avg_recall'], default={'model': 'None', 'avg_recall': 0})['avg_recall']*100:.2f}%)
+        - Some years may show lower recall due to higher false negatives, indicating challenges in complex scenes.
+        """)
+
+    # Model Ranking Table
+    with st.expander("Model Ranking", expanded=True):
+        st.markdown("Sort the table below to compare model performance across key metrics.")
+        ranking_df = metrics_df[['model', 'f1', 'avg_precision', 'avg_recall', 'total_tp', 'total_fp', 'total_fn']].copy()
+        ranking_df['f1'] = ranking_df['f1'].map('{:.2%}'.format)
+        ranking_df['avg_precision'] = ranking_df['avg_precision'].map('{:.2%}'.format)
+        ranking_df['avg_recall'] = ranking_df['avg_recall'].map('{:.2%}'.format)
+        st.dataframe(ranking_df, use_container_width=True)
+
+    # Model Performance Bar Chart
+    with st.expander("Model Performance Overview", expanded=True):
+        fig_bar = go.Figure(data=[
+            go.Bar(name='Average Precision', x=metrics_df['model'], y=metrics_df['avg_precision'], marker_color='#1B9E77'),
+            go.Bar(name='Average Recall', x=metrics_df['model'], y=metrics_df['avg_recall'], marker_color='#D95F02')
+        ])
+        fig_bar.update_layout(
+            barmode='group',
+            xaxis_title="Model",
+            yaxis_title="Score",
+            yaxis_tickformat=".0%",
+            xaxis_tickangle=-45,
+            height=400,
+            margin=dict(b=150),
+            colorway=['#1B9E77', '#D95F02']  # Colorblind-friendly colors
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+        st.markdown(get_plotly_download_button(fig_bar, "model_performance"), unsafe_allow_html=True)
+        st.markdown("This bar chart compares average precision and recall across models, filtered by your selections.", help="Precision measures detection accuracy; recall measures detection completeness.")
+
+    # Detailed Model Performance
+    with st.expander("Detailed Model Performance", expanded=False):
+        if selected_model != 'All Models':
+            st.subheader(f"Detailed Performance: {selected_model}")
+            model_num = int(selected_model.split(' ')[1])
+            selected_model_data = next(m['data'] for m in model_metrics if m['model'] == selected_model)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total True Positives", metrics_df[metrics_df['model'] == selected_model]['total_tp'].iloc[0])
+            with col2:
+                st.metric("Total False Positives", metrics_df[metrics_df['model'] == selected_model]['total_fp'].iloc[0])
+            with col3:
+                st.metric("Total False Negatives", metrics_df[metrics_df['model'] == selected_model]['total_fn'].iloc[0])
+            
+            st.dataframe(
+                selected_model_data.rename(columns={
+                    f'precision_{model_num}': 'Precision',
+                    f'recall_{model_num}': 'Recall',
+                    f'tp_{model_num}': 'True Positives',
+                    f'fp_{model_num}': 'False Positives',
+                    f'fn_{model_num}': 'False Negatives'
+                }).style.format({
+                    'Precision': '{:.2%}',
+                    'Recall': '{:.2%}',
+                    'year': '{}'
+                })
+            )
+            st.markdown(f"This table shows detailed performance metrics for {selected_model} across filtered images.")
+
+    # Performance by Year (Scatter Plot)
+    with st.expander("Performance by Year", expanded=False):
+        year_data = filtered_df.groupby('year').agg({
+            f'precision_{i}': 'mean' for i in model_nums
+        }).reset_index()
+        year_data['avg_precision'] = year_data[[f'precision_{i}' for i in model_nums]].mean(axis=1)
+        year_data['avg_recall'] = filtered_df.groupby('year').agg({
+            f'recall_{i}': 'mean' for i in model_nums
+        }).reset_index()[[f'recall_{i}' for i in model_nums]].mean(axis=1)
+        
+        fig_scatter = px.scatter(
+            year_data,
+            x='avg_precision',
+            y='avg_recall',
+            color='year',
+            text='year',
+            labels={'avg_precision': 'Average Precision', 'avg_recall': 'Average Recall'},
+            color_discrete_sequence=px.colors.qualitative.T10  # Colorblind-friendly
+        )
+        fig_scatter.update_traces(textposition='top center', marker_size=10)
+        fig_scatter.update_layout(
+            xaxis_tickformat=".0%",
+            yaxis_tickformat=".0%",
+            height=400
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.markdown(get_plotly_download_button(fig_scatter, "performance_by_year"), unsafe_allow_html=True)
+        st.markdown("This scatter plot shows average precision vs. recall for each year, filtered by your selections.", help="Each point represents a year’s average performance across all models.")
+
+    # Precision Trends Over Years
+    with st.expander("Precision Trends Over Years", expanded=False):
+        long_df = []
+        for mn in model_nums:
+            temp_df = filtered_df[['year', f'precision_{mn}']].groupby('year')[f'precision_{mn}'].mean().reset_index()
+            temp_df = temp_df.rename(columns={f'precision_{mn}': 'avg_precision'})
+            temp_df['model'] = f'Model {mn}'
+            long_df.append(temp_df)
+        precision_trend_df = pd.concat(long_df)
+        fig_line_precision = px.line(
+            precision_trend_df,
+            x='year',
+            y='avg_precision',
+            color='model',
+            labels={'avg_precision': 'Average Precision'},
+            height=400,
+            color_discrete_sequence=px.colors.qualitative.T10
+        )
+        fig_line_precision.update_layout(yaxis_tickformat=".0%")
+        st.plotly_chart(fig_line_precision, use_container_width=True)
+        st.markdown(get_plotly_download_button(fig_line_precision, "precision_trends"), unsafe_allow_html=True)
+        st.markdown("This line chart shows how average precision for each model changes across years.")
+
+    # Recall Trends Over Years
+    with st.expander("Recall Trends Over Years", expanded=False):
+        @st.cache_data
+        def calculate_recall_trends(df, model_nums):
+            long_df_recall = []
+            for mn in model_nums:
+                rec_col = f'recall_{mn}'
+                if rec_col in df.columns:
+                    temp_df = df[df[rec_col] > 0][['year', rec_col]].groupby('year')[rec_col].mean().reset_index()
+                    if not temp_df.empty:
+                        temp_df = temp_df.rename(columns={rec_col: 'avg_recall'})
+                        temp_df['model'] = f'Model {mn}'
+                        long_df_recall.append(temp_df)
+            if long_df_recall:
+                recall_trend_df = pd.concat(long_df_recall)
+                recall_trend_df['year'] = recall_trend_df['year'].astype(str)
+                return recall_trend_df
+            return pd.DataFrame(columns=['year', 'avg_recall', 'model'])
+        recall_trend_df = calculate_recall_trends(filtered_df, model_nums)
+        if not recall_trend_df.empty:
+            fig_line_recall = px.line(
+                recall_trend_df,
+                x='year',
+                y='avg_recall',
+                color='model',
+                labels={'avg_recall': 'Average Recall', 'year': 'Year'},
+                height=400,
+                markers=True,
+                color_discrete_sequence=px.colors.qualitative.T10
+            )
+            fig_line_recall.update_layout(
+                yaxis_tickformat=".0%",
+                showlegend=True,
+                legend=dict(yanchor="top", y=1.1, xanchor="left", x=0)
+            )
+            st.plotly_chart(fig_line_recall, use_container_width=True)
+            st.markdown(get_plotly_download_button(fig_line_recall, "recall_trends"), unsafe_allow_html=True)
+            st.markdown("This line chart shows how average recall for each model changes across years (excluding recall <= 0).")
+        else:
+            st.warning("No data available for the recall trends chart based on current filters.")
+
+    # Precision Distribution
+    with st.expander("Precision Distribution Across Models", expanded=False):
+        precision_cols = [f'precision_{mn}' for mn in model_nums]
+        melt_df_precision = filtered_df.melt(id_vars=['filename'], value_vars=precision_cols, var_name='model', value_name='precision')
+        melt_df_precision['model'] = melt_df_precision['model'].str.replace('precision_', 'Model ')
+        fig_box_precision = px.box(
+            melt_df_precision,
+            x='model',
+            y='precision',
+            labels={'precision': 'Precision'},
+            height=400,
+            color_discrete_sequence=['#1B9E77']
+        )
+        fig_box_precision.update_layout(yaxis_tickformat=".0%")
+        st.plotly_chart(fig_box_precision, use_container_width=True)
+        st.markdown(get_plotly_download_button(fig_box_precision, "precision_distribution"), unsafe_allow_html=True)
+        st.markdown("This box plot shows the distribution of precision for each model across all images.", help="Box plots show median, quartiles, and outliers for precision.")
+
+    # Recall Distribution
+    with st.expander("Recall Distribution Across Models", expanded=False):
+        recall_cols = [f'recall_{mn}' for mn in model_nums]
+        melt_df_recall = filtered_df.melt(id_vars=['filename'], value_vars=recall_cols, var_name='model', value_name='recall')
+        melt_df_recall['model'] = melt_df_recall['model'].str.replace('recall_', 'Model ')
+        fig_box_recall = px.box(
+            melt_df_recall,
+            x='model',
+            y='recall',
+            labels={'recall': 'Recall'},
+            height=400,
+            color_discrete_sequence=['#D95F02']
+        )
+        fig_box_recall.update_layout(yaxis_tickformat=".0%")
+        st.plotly_chart(fig_box_recall, use_container_width=True)
+        st.markdown(get_plotly_download_button(fig_box_recall, "recall_distribution"), unsafe_allow_html=True)
+        st.markdown("This box plot shows the distribution of recall for each model across all images.", help="Box plots show median, quartiles, and outliers for recall.")
+
+    # TP, FP, FN Counts
+    with st.expander("True Positives, False Positives, and False Negatives", expanded=False):
+        totals = []
+        for mn in model_nums:
+            totals.append({
+                'model': f'Model {mn}',
+                'True Positives': filtered_df[f'tp_{mn}'].sum(),
+                'False Positives': filtered_df[f'fp_{mn}'].sum(),
+                'False Negatives': filtered_df[f'fn_{mn}'].sum()
+            })
+        totals_df = pd.DataFrame(totals)
+        totals_melt = totals_df.melt(id_vars='model', var_name='Metric', value_name='Count')
+        fig_stacked = px.bar(
+            totals_melt,
+            x='model',
+            y='Count',
+            color='Metric',
+            barmode='stack',
+            height=400,
+            color_discrete_map={
+                'True Positives': '#1B9E77',
+                'False Positives': '#D95F02',
+                'False Negatives': '#7570B3'
+            }
+        )
+        st.plotly_chart(fig_stacked, use_container_width=True)
+        st.markdown(get_plotly_download_button(fig_stacked, "tp_fp_fn_counts"), unsafe_allow_html=True)
+        st.markdown("This stacked bar chart shows the total counts of true positives, false positives, and false negatives for each model.", help="High FPs or FNs may indicate model weaknesses.")
+
+    # Performance by Context
+    with st.expander("Performance by Domaine and Porte Greffe", expanded=False):
+        st.markdown("Analyze model performance across different domaines and porte greffes.")
+        context_cols = ['domaine', 'porte_greffe']
+        for context in context_cols:
+            context_data = filtered_df.groupby(context).agg({
+                f'precision_{i}': 'mean' for i in model_nums
+            }).reset_index()
+            context_data['avg_precision'] = context_data[[f'precision_{i}' for i in model_nums]].mean(axis=1)
+            context_data['avg_recall'] = filtered_df.groupby(context).agg({
+                f'recall_{i}': 'mean' for i in model_nums
+            }).reset_index()[[f'recall_{i}' for i in model_nums]].mean(axis=1)
+            context_data = context_data[[context, 'avg_precision', 'avg_recall']].sort_values('avg_precision', ascending=False)
+            st.subheader(f"Performance by {context.capitalize()}")
+            st.dataframe(context_data.style.format({
+                'avg_precision': '{:.2%}',
+                'avg_recall': '{:.2%}'
+            }))
+            st.markdown(f"This table shows average precision and recall for each {context}, helping identify conditions where models perform best or worst.")
+
+    # Error Analysis
+    with st.expander("Error Analysis", expanded=False):
+        st.markdown("Identify images with high false positives or false negatives for further investigation.")
+        error_data = filtered_df[['filename', 'year', 'domaine', 'porte_greffe', 'parcelle']].copy()
+        for mn in model_nums:
+            error_data[f'fp_{mn}'] = filtered_df[f'fp_{mn}']
+            error_data[f'fn_{mn}'] = filtered_df[f'fn_{mn}']
+        error_data['avg_fp'] = error_data[[f'fp_{mn}' for mn in model_nums]].mean(axis=1)
+        error_data['avg_fn'] = error_data[[f'fn_{mn}' for mn in model_nums]].mean(axis=1)
+        high_errors = error_data[error_data[['avg_fp', 'avg_fn']].max(axis=1) > error_data[['avg_fp', 'avg_fn']].quantile(0.95).max()]
+        st.dataframe(high_errors[['filename', 'year', 'domaine', 'porte_greffe', 'parcelle', 'avg_fp', 'avg_fn']].style.format({
+            'avg_fp': '{:.1f}',
+            'avg_fn': '{:.1f}'
+        }))
+        st.markdown("This table lists images with unusually high false positives or false negatives (top 5% of errors), indicating potential challenges in detection.")
+
+    # Correlation Heatmap
+    with st.expander("Correlation Between Model Precisions", expanded=False):
+        prec_df = filtered_df[[f'precision_{mn}' for mn in model_nums]]
+        corr = prec_df.corr()
+        fig_heatmap = px.imshow(
+            corr,
+            x=[f'Model {mn}' for mn in model_nums],
+            y=[f'Model {mn}' for mn in model_nums],
+            color_continuous_scale='Viridis',
+            height=400
+        )
+        fig_heatmap.update_layout(annotations=[
+            dict(
+                x=i, y=j, text=f"{corr.iloc[j, i]:.2f}",
+                showarrow=False, font=dict(color="white" if abs(corr.iloc[j, i]) > 0.5 else "black")
+            ) for i in range(len(corr)) for j in range(len(corr))
+        ])
+        st.plotly_chart(fig_heatmap, use_container_width=True)
+        st.markdown(get_plotly_download_button(fig_heatmap, "correlation_heatmap"), unsafe_allow_html=True)
+        st.markdown("This heatmap shows the correlation between precision values of different models, indicating how similarly they perform.", help="High correlations (close to 1) suggest models perform similarly.")
+
+    # Top Images by Average Precision
+    with st.expander("Top 5 Images by Average Precision", expanded=False):
+        image_metrics = filtered_df[['filename', 'year', 'domaine', 'porte_greffe', 'parcelle']].copy()
+        image_metrics['avg_precision'] = filtered_df[[f'precision_{i}' for i in model_nums]].mean(axis=1)
+        image_metrics['avg_recall'] = filtered_df[[f'recall_{i}' for i in model_nums]].mean(axis=1)
+        top_images = image_metrics.sort_values('avg_precision', ascending=False).head(5)
+        st.dataframe(
+            top_images.style.format({
+                'avg_precision': '{:.2%}',
+                'avg_recall': '{:.2%}',
+                'year': '{}'
+            })
+        )
+        st.markdown("This table lists the top 5 images by average precision across all models, filtered by your selections.")
+
+    # Export Filtered Data
+    with st.expander("Export Data", expanded=False):
+        csv = filtered_df.to_csv(index=False)
+        st.download_button(
+            label="Download Filtered Data as CSV",
+            data=csv,
+            file_name="filtered_model_evaluation.csv",
+            mime="text/csv"
+        )
+        st.markdown("Download the filtered dataset for further analysis.")
+
+    # Conclusion
+    with st.expander("Conclusion", expanded=True):
+        st.markdown(f"""
+        The evaluation identifies **{winner['model']}** as the top performer with an F1 score of {winner['f1']*100:.2f}%. 
+        Models generally perform well, with precision and recall often exceeding 80% across various years and conditions. 
+        Certain years or domaines may exhibit lower recall due to higher false negatives, suggesting challenges in complex scenes (see Error Analysis). 
+        Use the filters and visualizations to explore specific model performance, identify trends, and pinpoint areas for improvement.
+        """)
+
+    # Help Section
+    with st.expander("Help & Documentation", expanded=False):
+        st.markdown("""
+        **How to Use This Report**:
+        - Use the **Filters** to narrow down data by model, year, domaine, porte greffe, or parcelle.
+        - Explore visualizations to understand model performance trends and distributions.
+        - Check the **Error Analysis** section to identify images with high false positives/negatives.
+        - Download charts as PNGs or the filtered dataset as CSV for further analysis.
+        
+        **Metric Definitions**:
+        - **Precision**: Proportion of detections that were correct.
+        - **Recall**: Proportion of actual objects detected.
+        - **F1 Score**: Balances precision and recall for overall performance.
+        - **True Positives (TP)**: Correct detections.
+        - **False Positives (FP)**: Incorrect detections.
+        - **False Negatives (FN)**: Missed detections.
+        
+        For support, contact your data science team.
+        """)
+
+if __name__ == "__main__":
+    main()
