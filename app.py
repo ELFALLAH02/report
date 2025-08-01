@@ -22,7 +22,7 @@ from components.help_section import render_help_section
 from utils.utils import load_data, calculate_model_metrics
 
 # Set page configuration
-st.set_page_config(page_title="Advanced Model Evaluation Report", layout="wide")
+st.set_page_config(page_title="Croplens AI", layout="wide")
 
 def main():
     st.title("Advanced Model Evaluation Report")
