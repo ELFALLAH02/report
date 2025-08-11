@@ -1,5 +1,3 @@
-"# report" 
-"# report" 
 # Model Evaluation Report
 
 This repository hosts a Streamlit application for interactive analysis of object detection models in citrus groves. It aggregates metrics from multiple evaluation CSV files and provides dashboards for comparing precision, recall, and other performance metrics across models and contexts.
